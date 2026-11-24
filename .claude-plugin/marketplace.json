@@ -1,0 +1,14 @@
+{
+  "name": "ip-purity-detect",
+  "owner": {
+    "name": "cc6pzupa"
+  },
+  "plugins": [
+    {
+      "name": "ip-purity",
+      "source": "./",
+      "description": "一键 IP 纯净度检测（skill + MCP）"
+    }
+  ],
+  "description": "一键 IP 纯净度检测插件（skill + MCP）"
+}

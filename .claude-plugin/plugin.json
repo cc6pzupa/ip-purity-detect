@@ -1,0 +1,43 @@
+{
+  "name": "ip-purity",
+  "version": "1.0.0",
+  "description": "一键 IP 纯净度检测：多源免费 IP 库汇总，判断住宅/机房、代理/VPN、风险分、黑名单、原生/广播，给出评分与使用建议。含 skill 和 MCP。",
+  "author": {
+    "name": "cc6pzupa"
+  },
+  "repository": "https://github.com/cc6pzupa/ip-purity-detect",
+  "keywords": [
+    "ip",
+    "proxy",
+    "vpn",
+    "residential",
+    "ip-quality",
+    "risk"
+  ],
+  "mcpServers": {
+    "ip-purity": {
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/mcp/server.py"
+      ]
+    }
+  },
+  "network": {
+    "hosts": [
+      "ip-api.com",
+      "api.ipapi.is",
+      "proxycheck.io",
+      "ipinfo.io",
+      "ipwho.is",
+      "api.ip.sb",
+      "scamalytics.com",
+      "api.ipify.org",
+      "api64.ipify.org",
+      "api6.ipify.org",
+      "ifconfig.me",
+      "icanhazip.com",
+      "ipqualityscore.com",
+      "api.abuseipdb.com"
+    ]
+  }
+}
