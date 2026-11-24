@@ -98,8 +98,13 @@ ipcheck -f list.txt --no-denylist         # 本次不读也不写清单
 
 这个功能需要一个免费的 Cloudflare API Token，没有 token 时自动跳过，不影响其他检测：
 
-1. 登录 dash.cloudflare.com，进入"My Profile → API Tokens → Create Token → Custom token"，权限选 **Radar: Read**。
-2. 运行 `export CF_API_TOKEN=你的token`，然后照常运行 `ipcheck`。
+1. 登录 dash.cloudflare.com，打开 [API Tokens](https://dash.cloudflare.com/profile/api-tokens)，点 **Create Token**，选最下面的 **Create Custom Token**（从空白开始，不用模板）。
+2. Token name 随便填，比如 `ipcheck-radar`。
+3. **Permissions** 这一行依次选三个下拉框：**Account** → **Radar** → **Read**。只要这一条，别的权限都不要加。
+4. 点 **Continue to summary**，再点 **Create Token**。token 只显示一次，要马上复制。
+5. 运行 `export CF_API_TOKEN=你的token`，然后照常运行 `ipcheck`。想长期生效，就把这行写进 `~/.bashrc`。
+
+> 这个 token 只能读 Radar 的公开统计数据，改不了你账号里的任何东西。泄露了也只能被别人拿去查统计数据，到 API Tokens 页面删掉重建一个就行。
 
 **参与判断的方式**：
 - 真人流量低于 20%：算 1 票机房，扣 10 分。
