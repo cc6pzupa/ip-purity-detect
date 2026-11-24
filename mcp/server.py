@@ -29,9 +29,9 @@ TOOLS = [
     {
         "name": "check_ip",
         "description": (
-            "检测 IP 纯净度：并发查询 ip-api、ipapi.is、proxycheck、ipinfo、ipwho.is、ip.sb、scamalytics、DNSBL "
+            "检测 IP 纯净度：并发查询 ip-api、proxycheck、ipquery、iplocate、ipapi.is、scamalytics、ip2location、ipinfo、Shodan、GreyNoise、Tor 出口列表等 16 个免费源 "
             "（配置了 IPQS_KEY / ABUSEIPDB_KEY 时还会查 IPQualityScore / AbuseIPDB），汇总判断 IP 类型（住宅/机房/移动）、"
-            "代理/VPN/Tor 标记、风险分、黑名单、原生/广播，给出 0-100 综合评分与银行/支付/注册等场景的使用建议。"
+            "代理/VPN/Tor 标记（任一来源标记即 0 分）、风险分、黑名单、原生/广播，给出 0-100 综合评分与银行/支付/注册等场景的使用建议。"
             "ip 和 proxy 都不填时检测运行本服务的机器的出口 IP。"
         ),
         "inputSchema": {

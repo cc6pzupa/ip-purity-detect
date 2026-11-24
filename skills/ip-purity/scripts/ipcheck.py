@@ -37,7 +37,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 TIMEOUT = 10
@@ -114,7 +114,9 @@ def empty(name):
     return {"source": name, "ok": False, "error": None, "country": None, "country_code": None,
             "region": None, "city": None, "asn": None, "org": None, "isp": None, "type": None,
             "proxy": None, "vpn": None, "tor": None, "hosting": None, "abuser": None, "risk": None,
-            "asn_country": None, "note": None}
+            "asn_country": None, "note": None,
+            # 该来源"类型判断"的可信度：有专门检测数据的 = 1.0，只按名称关键词猜的 = 0.5
+            "w": 1.0}
 
 
 # ───────────────────────────── 各数据源 ─────────────────────────────
@@ -137,7 +139,8 @@ def src_ipapi_com(ip):
     elif d.get("mobile"):
         r["type"] = "mobile"
     else:
-        r["type"] = "residential" if not d.get("proxy") else None
+        # "不是机房"不等于"是住宅"，只算半票
+        r["type"], r["w"] = "residential", 0.5
     return r
 
 
@@ -226,6 +229,7 @@ def src_ipinfo(ip):
              asn=int(m.group(1)) if m else None, org=m.group(2) if m else org)
     host = d.get("hostname") or ""
     r["type"] = keyword_type(r["org"])
+    r["w"] = 0.5
     # 反解析主机名里的线索：住宅宽带常带 dsl/cable/fiber/dyn/pool/res 等
     if host:
         r["note"] = f"hostname={host}"
@@ -252,6 +256,7 @@ def src_ipwhois(ip):
     r.update(ok=True, country=d.get("country"), country_code=d.get("country_code"), region=d.get("region"),
              city=d.get("city"), asn=c.get("asn"), org=c.get("org"), isp=c.get("isp"))
     r["type"] = keyword_type(c.get("org")) or keyword_type(c.get("isp"))
+    r["w"] = 0.5
     return r
 
 
@@ -261,6 +266,7 @@ def src_ipsb(ip):
     r.update(ok=True, country=d.get("country"), country_code=d.get("country_code"), region=d.get("region"),
              city=d.get("city"), asn=d.get("asn"), org=d.get("organization"), isp=d.get("asn_organization"))
     r["type"] = keyword_type(d.get("organization")) or keyword_type(d.get("asn_organization"))
+    r["w"] = 0.5
     return r
 
 
@@ -326,10 +332,152 @@ def src_dnsbl(ip):
             checked += 1
             if hit:
                 hits.append(bl)
-    r.update(ok=checked > 0, abuser=bool(hits) if checked else None,
-             note=f"{len(hits)}/{checked} 命中" + (f": {', '.join(hits)}" if hits else ""))
+    # 邮件黑名单单独计分，不计入"滥用"投票
+    r.update(ok=checked > 0, note=f"{len(hits)}/{checked} 命中" + (f": {', '.join(hits)}" if hits else ""))
+    if not checked:
+        r["error"] = "DNS 查询全部失败"
     r["dnsbl_hits"] = hits
     r["dnsbl_checked"] = checked
+    return r
+
+
+def src_ipquery(ip):
+    r = empty("ipquery.io")
+    d = http_get(f"https://api.ipquery.io/{ip}?format=json")
+    isp, loc, risk = d.get("isp") or {}, d.get("location") or {}, d.get("risk") or {}
+    if not risk and not isp:
+        r["error"] = "无数据"
+        return r
+    m = re.match(r"AS(\d+)", str(isp.get("asn") or ""))
+    r.update(ok=True, country=loc.get("country"), country_code=loc.get("country_code"), region=loc.get("state"),
+             city=loc.get("city"), asn=int(m.group(1)) if m else None, org=isp.get("org"), isp=isp.get("isp"),
+             proxy=risk.get("is_proxy"), vpn=risk.get("is_vpn"), tor=risk.get("is_tor"),
+             hosting=risk.get("is_datacenter"), risk=risk.get("risk_score"))
+    if risk.get("is_datacenter"):
+        r["type"] = "datacenter"
+    elif risk.get("is_mobile"):
+        r["type"] = "mobile"
+    elif "is_datacenter" in risk:
+        r["type"], r["w"] = "residential", 0.5
+    return r
+
+
+def src_iplocate(ip):
+    r = empty("iplocate.io")
+    d = http_get(f"https://www.iplocate.io/api/lookup/{ip}")
+    if d.get("error"):
+        r["error"] = str(d["error"])
+        return r
+    asn, pv, comp = d.get("asn") or {}, d.get("privacy") or {}, d.get("company") or {}
+    m = re.match(r"AS(\d+)", str(asn.get("asn") or ""))
+    r.update(ok=True, country=d.get("country"), country_code=d.get("country_code"), region=d.get("subdivision"),
+             city=d.get("city"), asn=int(m.group(1)) if m else None, org=comp.get("name"), isp=asn.get("name"),
+             asn_country=(asn.get("country_code") or "").upper() or None,
+             proxy=pv.get("is_proxy"), vpn=pv.get("is_vpn"), tor=pv.get("is_tor"),
+             hosting=pv.get("is_hosting"), abuser=pv.get("is_abuser"))
+    at = (asn.get("type") or comp.get("type") or "").lower()
+    if pv.get("is_hosting") or at == "hosting":
+        r["type"] = "datacenter"
+    elif at == "isp":
+        r["type"] = "residential"
+    elif at in ("business", "education", "government"):
+        r["type"] = at
+    if pv.get("is_icloud_relay"):
+        r["note"] = "iCloud 私人中继"
+    return r
+
+
+def src_ip2location(ip):
+    r = empty("ip2location.io")
+    d = http_get(f"https://api.ip2location.io/?ip={ip}")
+    if d.get("error"):
+        r["error"] = str((d["error"] or {}).get("error_message", d["error"]))
+        return r
+    r.update(ok=True, country=d.get("country_name"), country_code=d.get("country_code"), region=d.get("region_name"),
+             city=d.get("city_name"), asn=int(d["asn"]) if str(d.get("asn") or "").isdigit() else None,
+             isp=d.get("as"), proxy=d.get("is_proxy"))
+    r["type"] = keyword_type(d.get("as"))
+    r["w"] = 0.5
+    return r
+
+
+def src_blackbox(ip):
+    # ipinfo.app Blackbox：Y/N。它把机房网段也算进去，所以只当"机房"信号，不当"代理"
+    r = empty("ipinfo-blackbox")
+    t = http_get(f"https://blackbox.ipinfo.app/lookup/{ip}", raw=True).strip().upper()
+    if t not in ("Y", "N"):
+        r["error"] = f"未知返回：{t[:20]}"
+        return r
+    r.update(ok=True, hosting=t == "Y", note="Y=代理/机房网段" if t == "Y" else None)
+    if t == "Y":
+        r["type"], r["w"] = "datacenter", 0.5
+    return r
+
+
+_TOR = {"set": None}
+
+
+def src_tor(ip):
+    r = empty("Tor 官方出口列表")
+    if _TOR["set"] is None:
+        txt = http_get("https://check.torproject.org/torbulkexitlist", raw=True)
+        _TOR["set"] = set(x.strip() for x in txt.splitlines() if x.strip())
+    r.update(ok=True, tor=ip in _TOR["set"])
+    return r
+
+
+def src_greynoise(ip):
+    r = empty("GreyNoise")
+    try:
+        d = http_get(f"https://api.greynoise.io/v3/community/{ip}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:  # 没见过这个 IP 在扫描互联网 = 好事
+            r.update(ok=True, abuser=False, note="未观察到扫描行为")
+            return r
+        raise
+    cls = d.get("classification")
+    r.update(ok=True, note=f"classification={cls}; noise={d.get('noise')}; riot={d.get('riot')}")
+    r["abuser"] = cls == "malicious"
+    return r
+
+
+def src_sfs(ip):
+    r = empty("StopForumSpam")
+    d = http_get(f"https://api.stopforumspam.org/api?ip={ip}&json")
+    x = d.get("ip") or {}
+    if not d.get("success"):
+        r["error"] = d.get("error", "failed")
+        return r
+    n = int(x.get("frequency") or 0)
+    r.update(ok=True, abuser=bool(x.get("appears")), note=f"垃圾注册举报 {n} 次" if n else None)
+    if x.get("torexit"):
+        r["tor"] = True
+    return r
+
+
+def src_shodan(ip):
+    r = empty("Shodan InternetDB")
+    try:
+        d = http_get(f"https://internetdb.shodan.io/{ip}")
+    except urllib.error.HTTPError as e:
+        if e.code == 404:
+            r.update(ok=True, note="无开放端口记录")
+            return r
+        raise
+    tags = [t.lower() for t in d.get("tags") or []]
+    ports = d.get("ports") or []
+    r["ok"] = True
+    if "proxy" in tags:
+        r["proxy"] = True
+    if "vpn" in tags:
+        r["vpn"] = True
+    if "tor" in tags:
+        r["tor"] = True
+    if "cloud" in tags:
+        r["type"], r["w"], r["hosting"] = "datacenter", 0.5, True
+    if "malware" in tags or "compromised" in tags:
+        r["abuser"] = True
+    r["note"] = (f"tags={','.join(tags)}; " if tags else "") + f"ports={','.join(map(str, ports[:12]))}"
     return r
 
 
@@ -381,6 +529,14 @@ SOURCES = {
     "ipwhois": src_ipwhois,
     "ipsb": src_ipsb,
     "scamalytics": src_scamalytics,
+    "ipquery": src_ipquery,
+    "iplocate": src_iplocate,
+    "ip2location": src_ip2location,
+    "blackbox": src_blackbox,
+    "tor": src_tor,
+    "greynoise": src_greynoise,
+    "sfs": src_sfs,
+    "shodan": src_shodan,
     "dnsbl": src_dnsbl,
 }
 KEYED = {"ipqs": ("IPQS_KEY", src_ipqs), "abuseipdb": ("ABUSEIPDB_KEY", src_abuseipdb)}
@@ -495,16 +651,18 @@ def analyze(ip, results):
     org = majority("org")
     isp = majority("isp")
 
-    # 类型：只统计给出判断的来源；机房信号优先（风控偏向保守）
+    # ── 类型：加权投票。专门检测数据 = 1 票，按名称关键词猜的 = 0.5 票 ──
+    # 机房信号优先（风控偏保守）：机房票数占 40% 及以上就判为机房
     tv = {}
     for r in ok:
         if r.get("type"):
-            tv[r["type"]] = tv.get(r["type"], 0) + 1
+            tv[r["type"]] = round(tv.get(r["type"], 0) + r.get("w", 1.0), 1)
     type_total = sum(tv.values())
     dc = tv.get("datacenter", 0)
+    dc_ratio = dc / type_total if type_total else 0
     if not type_total:
         ip_type = None
-    elif dc and dc / type_total >= 0.4:
+    elif dc_ratio >= 0.4:
         ip_type = "datacenter"
     else:
         ip_type = max(tv, key=tv.get)
@@ -513,8 +671,10 @@ def analyze(ip, results):
     vpn_y, vpn_n = _vote(results, "vpn")
     tor_y, tor_n = _vote(results, "tor")
     abuse_y, abuse_n = _vote(results, "abuser")
+    hit_by = {k: [r["source"] for r in ok if r.get(k)] for k in ("proxy", "vpn", "tor", "abuser")}
     risks = {r["source"]: r["risk"] for r in ok if isinstance(r.get("risk"), (int, float))}
     avg_risk = round(sum(risks.values()) / len(risks)) if risks else None
+    max_risk = max(risks.values()) if risks else None
     dnsbl = next((r for r in ok if r["source"] == "DNSBL"), None)
     dnsbl_hits = len(dnsbl.get("dnsbl_hits", [])) if dnsbl else 0
 
@@ -525,48 +685,64 @@ def analyze(ip, results):
     if country_code:
         if asn_cc and asn_cc != country_code:
             native, native_note = False, f"ASN 注册在 {asn_cc}，IP 定位在 {country_code}，疑似广播 IP"
-        elif len(cc_votes) > 1:
+        elif len(cc_votes) > 1 and max(cc_votes.values()) / sum(cc_votes.values()) < 0.75:
             native, native_note = False, "各库定位国家不一致（" + "/".join(f"{k}:{v}" for k, v in cc_votes.items()) + "），疑似广播 IP"
         elif asn_cc:
             native, native_note = True, "ASN 注册国与定位国一致"
         else:
-            native, native_note = True, "各库定位国家一致"
+            native, native_note = True, "各库定位国家基本一致"
 
     # ── 评分 ──
+    # 规则 1（一票否决）：任一来源标记为 代理 / VPN / Tor → 直接 0 分
+    # 规则 2（扣分制）：从 100 开始按下面扣
+    #   机房          -(30 + 20×机房票占比)     即 -38 ~ -50
+    #   商业/教育/政府 -10
+    #   类型无法判断   -10
+    #   滥用记录       每个来源 -10，最多 -30
+    #   风险分         平均分 >10 时 -平均分×0.4；任一来源 ≥75 再 -10
+    #   邮件黑名单     每命中一个 -5，最多 -15
+    #   疑似广播 IP    -8
     score = 100.0
     reasons = []
-    if ip_type == "datacenter":
-        pen = 25 + 15 * (dc / type_total)
-        score -= pen
-        reasons.append(f"机房 IP（{dc}/{type_total} 个来源）-{pen:.0f}")
-    elif ip_type == "business":
-        score -= 8
-        reasons.append("商业 / 企业线路 -8")
-    if proxy_y:
-        pen = min(36, 12 * proxy_y)
-        score -= pen
-        reasons.append(f"被标记为代理（{proxy_y}/{proxy_n}）-{pen}")
-    if vpn_y:
-        pen = min(30, 10 * vpn_y)
-        score -= pen
-        reasons.append(f"被标记为 VPN（{vpn_y}/{vpn_n}）-{pen}")
-    if tor_y:
-        score -= 50
-        reasons.append("Tor 出口节点 -50")
-    if abuse_y:
-        pen = min(20, 8 * abuse_y)
-        score -= pen
-        reasons.append(f"滥用 / 黑名单记录（{abuse_y}/{abuse_n}）-{pen}")
-    if avg_risk is not None and avg_risk > 10:
-        pen = round(avg_risk * 0.3)
-        score -= pen
-        reasons.append(f"平均风险分 {avg_risk} -{pen}")
-    if native is False:
-        score -= 5
-        reasons.append("疑似广播 IP -5")
+    flagged = sorted(set(hit_by["proxy"] + hit_by["vpn"] + hit_by["tor"]))
+    if flagged:
+        score = 0
+        kinds = "/".join(k for k, y in (("代理", proxy_y), ("VPN", vpn_y), ("Tor", tor_y)) if y)
+        reasons.append(f"被标记为{kinds}（{', '.join(flagged)}）→ 直接归零")
+    else:
+        if ip_type == "datacenter":
+            pen = 30 + 20 * dc_ratio
+            score -= pen
+            reasons.append(f"机房 IP（机房票 {dc:g}/{type_total:g}）-{pen:.0f}")
+        elif ip_type in ("business", "education", "government"):
+            score -= 10
+            reasons.append(f"{TYPE_CN[ip_type]}线路 -10")
+        elif ip_type is None:
+            score -= 10
+            reasons.append("无法判断类型 -10")
+        if abuse_y:
+            pen = min(30, 10 * abuse_y)
+            score -= pen
+            reasons.append(f"滥用记录（{', '.join(hit_by['abuser'])}）-{pen}")
+        if avg_risk is not None and avg_risk > 10:
+            pen = round(avg_risk * 0.4)
+            score -= pen
+            reasons.append(f"平均风险分 {avg_risk} -{pen}")
+        if max_risk is not None and max_risk >= 75:
+            score -= 10
+            reasons.append(f"有来源风险分 ≥75（{max_risk}）-10")
+        if dnsbl_hits:
+            pen = min(15, 5 * dnsbl_hits)
+            score -= pen
+            reasons.append(f"邮件黑名单 {dnsbl_hits} 个 -{pen}")
+        if native is False:
+            score -= 8
+            reasons.append("疑似广播 IP -8")
     score = max(0, min(100, round(score)))
 
-    if score >= 80:
+    if flagged:
+        level, emoji = "代理", "⛔"
+    elif score >= 80:
         level, emoji = "纯净", "🟢"
     elif score >= 60:
         level, emoji = "良好", "🟡"
@@ -576,36 +752,36 @@ def analyze(ip, results):
         level, emoji = "较差", "🔴"
 
     # ── 用途建议 ──
-    clean_res = ip_type in ("residential", "mobile") and not proxy_y and not vpn_y and not tor_y
     advice = []
     if tor_y:
         advice.append("Tor 出口：几乎所有网站都会拦截，不要用于任何账号操作。")
-    elif clean_res and score >= 80:
+    elif flagged:
+        advice.append("已被风控库标记为代理 / VPN：银行、支付、注册、AI 服务大概率会识别，建议换 IP。")
+    elif ip_type in ("residential", "mobile") and score >= 80:
         advice.append("住宅 / 移动 IP 且无代理标记：适合银行、支付、注册账号、AI 服务（ChatGPT / Claude）等对风控敏感的场景。")
-    elif clean_res:
+    elif ip_type in ("residential", "mobile"):
         advice.append("住宅 IP，但有风险分或黑名单记录：日常可用，银行 / 支付类可能偶尔触发验证。")
-    elif ip_type == "datacenter" and not proxy_y and not vpn_y:
-        advice.append("机房 IP 但未被标记代理：看视频、一般网站没问题；银行、支付、新号注册容易被识别为 VPN。")
     elif ip_type == "datacenter":
-        advice.append("机房 IP 且被标记为代理 / VPN：银行、支付、注册基本会被拦或要求验证，建议换住宅出口。")
+        advice.append("机房 IP（未被标记代理）：看视频、一般网站没问题；银行、支付、新号注册容易被识别为 VPN。")
     else:
-        advice.append("有代理 / VPN 标记：对风控敏感的场景（银行、支付、注册）不建议使用。")
+        advice.append("类型不明或为企业线路：一般使用没问题，敏感场景建议先小额 / 小范围试用。")
     if native is False:
         advice.append("疑似广播 IP：部分流媒体 / 地区限定服务可能按 ASN 注册国判断地区。")
     if dnsbl_hits:
         advice.append(f"命中 {dnsbl_hits} 个邮件黑名单：不适合做邮件服务器出口。")
-    if len(ok) < 3:
-        advice.append("可用来源较少（可能被限流），结论仅供参考，稍后可重试。")
+    if len(ok) < 6:
+        advice.append(f"只有 {len(ok)} 个来源成功（可能被限流），结论仅供参考，稍后可重试。")
 
     return {
         "ip": ip,
-        "score": score, "level": level, "emoji": emoji,
+        "score": score, "level": level, "emoji": emoji, "flagged_by": flagged,
         "type": ip_type, "type_cn": TYPE_CN.get(ip_type, ip_type), "type_votes": tv,
         "country_code": country_code, "country": majority("country"), "city": majority("city"),
         "asn": asn, "org": org, "isp": isp,
         "native": native, "native_note": native_note,
         "proxy": [proxy_y, proxy_n], "vpn": [vpn_y, vpn_n], "tor": [tor_y, tor_n], "abuse": [abuse_y, abuse_n],
-        "risk_scores": risks, "avg_risk": avg_risk,
+        "hit_by": hit_by,
+        "risk_scores": risks, "avg_risk": avg_risk, "max_risk": max_risk,
         "dnsbl": dnsbl.get("note") if dnsbl else None,
         "reasons": reasons, "advice": advice,
         "sources_ok": len(ok), "sources_total": len(results),
@@ -630,32 +806,32 @@ class C:
         return f"\033[{code}m{s}\033[0m" if cls.on else str(s)
 
 
-def flag_str(pair, bad_word):
+def flag_str(pair, bad_word, who=None):
     y, n = pair
     if not n:
         return C.w("2", "无数据")
     if y:
-        return C.w("31", f"{bad_word}（{y}/{n} 个来源）")
+        return C.w("31", f"{bad_word}（{y}/{n}：{', '.join(who or [])}）")
     return C.w("32", f"未标记（0/{n}）")
 
 
 def render(a):
     L = []
-    color = {"纯净": "32", "良好": "33", "一般": "33", "较差": "31"}[a["level"]]
+    color = {"纯净": "32", "良好": "33", "一般": "33", "较差": "31", "代理": "31"}[a["level"]]
     L.append(C.w("1;36", f"━━━━━━━━ IP 纯净度检测 · {a['ip']} ━━━━━━━━"))
     loc = " ".join(x for x in [a.get("country") or a.get("country_code"), a.get("city")] if x) or "未知"
     L.append(f"位置    {loc}")
     asn = f"AS{a['asn']}" if a.get("asn") else ""
     L.append(f"运营商  {' '.join(x for x in [asn, a.get('isp') or '', ('/ ' + a['org']) if a.get('org') and a.get('org') != a.get('isp') else ''] if x) or '未知'}")
-    tv = "、".join(f"{TYPE_CN.get(k, k)}{v}" for k, v in sorted(a["type_votes"].items(), key=lambda x: -x[1]))
+    tv = "、".join(f"{TYPE_CN.get(k, k)}{v:g}" for k, v in sorted(a["type_votes"].items(), key=lambda x: -x[1]))
     tcol = {"residential": "32", "mobile": "32", "datacenter": "31"}.get(a["type"], "33")
     L.append(f"类型    {C.w(tcol, a['type_cn'])}" + (C.w("2", f"  （投票：{tv}）") if tv else ""))
     if a["native"] is not None:
         L.append(f"原生    {C.w('32', '原生 IP') if a['native'] else C.w('33', '广播 IP')}" + C.w("2", f"  {a['native_note']}"))
-    L.append(f"代理    {flag_str(a['proxy'], '被标记为代理')}")
-    L.append(f"VPN     {flag_str(a['vpn'], '被标记为 VPN')}")
-    L.append(f"Tor     {flag_str(a['tor'], 'Tor 出口')}")
-    L.append(f"滥用    {flag_str(a['abuse'], '有滥用 / 黑名单记录')}")
+    L.append(f"代理    {flag_str(a['proxy'], '被标记为代理', a['hit_by']['proxy'])}")
+    L.append(f"VPN     {flag_str(a['vpn'], '被标记为 VPN', a['hit_by']['vpn'])}")
+    L.append(f"Tor     {flag_str(a['tor'], 'Tor 出口', a['hit_by']['tor'])}")
+    L.append(f"滥用    {flag_str(a['abuse'], '有滥用记录', a['hit_by']['abuser'])}")
     if a["risk_scores"]:
         rs = "  ".join(f"{k} {v}" for k, v in a["risk_scores"].items())
         L.append(f"风险分  {rs}" + C.w("2", "  （0-100，越低越好）"))
@@ -678,9 +854,9 @@ def render_sources(a):
 
     for r in a["sources"]:
         if not r["ok"]:
-            L.append(C.w("2", f"  ✗ {r['source']:<15} {r['error']}"))
+            L.append(C.w("2", f"  ✗ {r['source']:<18} {r['error']}"))
             continue
-        L.append(f"  ✓ {r['source']:<15} 类型={TYPE_CN.get(r['type'], r['type'])} 代理={b(r['proxy'])} VPN={b(r['vpn'])} "
+        L.append(f"  ✓ {r['source']:<18} 类型={TYPE_CN.get(r['type'], r['type'])} 代理={b(r['proxy'])} VPN={b(r['vpn'])} "
                  f"机房={b(r['hosting'])} 风险={r['risk'] if r['risk'] is not None else '-'}"
                  + C.w("2", f"  {r['country_code'] or r['country'] or ''} {r['org'] or r['isp'] or ''}"
                        + (f"  [{r['note']}]" if r.get("note") else "")))

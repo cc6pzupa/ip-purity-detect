@@ -1,6 +1,6 @@
 {
   "name": "ip-purity",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "一键 IP 纯净度检测：多源免费 IP 库汇总，判断住宅/机房、代理/VPN、风险分、黑名单、原生/广播，给出评分与使用建议。含 skill 和 MCP。",
   "author": {
     "name": "cc6pzupa"
@@ -37,7 +37,15 @@
       "ifconfig.me",
       "icanhazip.com",
       "ipqualityscore.com",
-      "api.abuseipdb.com"
+      "api.abuseipdb.com",
+      "api.ipquery.io",
+      "www.iplocate.io",
+      "api.ip2location.io",
+      "blackbox.ipinfo.app",
+      "check.torproject.org",
+      "api.greynoise.io",
+      "api.stopforumspam.org",
+      "internetdb.shodan.io"
     ]
   }
 }

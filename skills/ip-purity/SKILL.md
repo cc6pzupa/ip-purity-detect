@@ -27,13 +27,14 @@ description: 一键检测 IP 纯净度 / IP 质量——判断住宅还是机房
 
 ## 数据来源（免费、免注册）
 
-ip-api.com、ipapi.is、proxycheck.io、ipinfo.io、ipwho.is、ip.sb、scamalytics（网页解析）、DNSBL（Spamhaus / SpamCop / Barracuda / PSBL）。
+ip-api.com、proxycheck.io、ipquery.io、iplocate.io、ipapi.is、scamalytics、ip2location.io、ipinfo.io、ipwho.is、ip.sb、ipinfo Blackbox、Shodan InternetDB、Tor 官方出口列表、GreyNoise、StopForumSpam、DNSBL，共 16 个。
 
 ## 怎么读结果
 
 JSON 关键字段：
-- `score`：0-100 分，`level` 分 纯净 ≥80、良好 60-79、一般 40-59、较差 <40。
-- `type`：residential / mobile / datacenter / business。`type_votes` 是各来源的投票。只要 40% 的来源说是机房，就判为机房。
+- `score`：0-100 分。**任一来源标记为代理、VPN 或 Tor，就直接 0 分**，`level` 为"代理"，标记的来源列在 `flagged_by`。其余按扣分算，`level` 分 纯净 ≥80、良好 60-79、一般 40-59、较差 <40。
+- `type`：residential / mobile / datacenter / business。`type_votes` 是加权票数，有专门检测数据的来源算 1 票，按名称猜的算 0.5 票。机房票占 40% 及以上就判为机房。
+- `hit_by`：每一项标记分别是哪些来源给出的。
 - `proxy`、`vpn`、`tor`、`abuse`：`[被标记的来源数, 给出判断的来源数]`。
 - `risk_scores`：各家风险分（越低越好），`avg_risk` 是平均值。
 - `native`：false 表示疑似广播 IP。判断依据是 ASN 注册国和定位国不一致，或者各库定位不一致。
@@ -44,7 +45,8 @@ JSON 关键字段：
 
 1. 第一句给结论：评分、等级、住宅还是机房、能不能用于用户关心的场景（银行、支付、注册、ChatGPT 等）。
 2. 再列关键证据：几个来源说是机房、谁标记了代理、风险分多少。
-3. 来源之间有分歧要直说，比如"proxycheck 标为 VPN，其余 3 家未标记"，不要只挑好听的说。
-4. 成功的来源少于 3 个时，要说明结论不可靠，建议稍后重试。
-5. 结果不好时给下一步：换同组的其他出口 IP 再测，改用住宅 / ISP 静态代理，或者用真实家庭宽带做出口。
-6. 要提醒一句：各家库的数据有延迟，银行实际用的是付费风控库，这里的高分不代表一定能过。
+3. 结果是 0 分（⛔ 代理）时，要说出是哪个来源标记的（看 `flagged_by`）。只有一家标记、其他都没标的，要提醒可能是误判。Starlink、移动网络 CGNAT、企业出口常被误标。
+4. 来源之间有分歧要直说，比如"proxycheck 标为 VPN，其余 3 家未标记"，不要只挑好听的说。
+5. 成功的来源少于 6 个时，要说明结论不可靠，建议稍后重试。
+6. 结果不好时给下一步：换同组的其他出口 IP 再测，改用住宅 / ISP 静态代理，或者用真实家庭宽带做出口。
+7. 要提醒一句：各家库的数据有延迟，银行实际用的是付费风控库，这里的高分不代表一定能过。
