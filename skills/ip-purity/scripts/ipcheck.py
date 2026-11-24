@@ -41,11 +41,12 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 TIMEOUT = 10
@@ -1118,44 +1119,167 @@ def flag_str(pair, bad_word, who=None):
     return C.w("32", f"未标记（0/{n}）")
 
 
+SHORT = {"ip-api.com": "ip-api", "ipapi.is": "ipapi.is", "proxycheck.io": "ProxyChk", "ipinfo.io": "ipinfo",
+         "ipwho.is": "ipwhois", "ip.sb": "ip.sb", "scamalytics": "Scamaly", "ipquery.io": "ipquery",
+         "iplocate.io": "iplocate", "ip2location.io": "IP2Loc", "ipinfo-blackbox": "Blackbox",
+         "Tor 官方出口列表": "Tor列表", "GreyNoise": "GreyNoise", "StopForumSpam": "SFS",
+         "Shodan InternetDB": "Shodan", "IPPure": "IPPure", "Cloudflare Radar": "CFRadar",
+         "IPQualityScore": "IPQS", "AbuseIPDB": "AbuseIPDB", "DNSBL": "DNSBL"}
+
+
+def dw(s):
+    """终端显示宽度：中文 / 全角 / emoji 占 2 格。"""
+    s = re.sub(r"\033\[[0-9;]*m", "", str(s))
+    w = 0
+    for ch in s:
+        if unicodedata.combining(ch):
+            continue
+        w += 2 if unicodedata.east_asian_width(ch) in ("W", "F") else 1
+    return w
+
+
+def pad(s, n):
+    return str(s) + " " * max(0, n - dw(s))
+
+
+def risk_level(v):
+    if v < 10:
+        return "极低风险", "32"
+    if v < 30:
+        return "低风险", "32"
+    if v < 60:
+        return "中等风险", "33"
+    if v < 85:
+        return "高风险", "31"
+    return "极高风险", "31"
+
+
+def bar(v, width=20):
+    n = max(0, min(width, round(v / 100 * width)))
+    _, col = risk_level(v)
+    return C.w(col, "█" * n) + C.w("2", "░" * (width - n))
+
+
+def _matrix(L, cols, rows, label_w=10, col_w=10, per_block=7):
+    """cols: [(表头, 来源结果)]；rows: [(行名, 取值函数)]。取值函数返回 (文字, 颜色)。列太多时分块。"""
+    for i in range(0, len(cols), per_block):
+        block = cols[i:i + per_block]
+        L.append(("  " + pad(C.w("36", "库"), label_w) + "".join(pad(C.w("3;36", h), col_w) for h, _ in block)).rstrip())
+        for name, fn in rows:
+            cells = []
+            for _, r in block:
+                txt, col = fn(r)
+                cells.append(pad(C.w(col, txt) if col else txt, col_w))
+            L.append(("  " + pad(C.w("36", name), label_w) + "".join(cells)).rstrip())
+        if i + per_block < len(cols):
+            L.append("")
+
+
 def render(a):
     L = []
     color = LEVEL_COLOR[a["level"]]
-    L.append(C.w("1;36", f"━━━━━━━━ IP 纯净度检测 · {a['ip']} ━━━━━━━━"))
+    line = "#" * 64
+    L.append(C.w("2", line))
+    L.append(C.w("1", f"  IP 纯净度体检报告：") + C.w("1;36", a["ip"]))
+    L.append(C.w("2", f"  ipcheck v{__version__}  ·  {time.strftime('%Y-%m-%d %H:%M:%S')}"))
+    L.append(C.w("2", line))
     if not a.get("sources") and a.get("denylisted"):
         L.append(f"综合评分  {C.w('1;31', '0/100')}  ⛔ {C.w('1;31', '负面清单')}")
         L += [C.w("2", "原因      " + x) for x in a["reasons"]] + [f"建议      {x}" for x in a["advice"]]
         return "\n".join(L)
-    loc = " ".join(x for x in [a.get("country") or a.get("country_code"), a.get("city")] if x) or "未知"
-    L.append(f"位置    {loc}")
-    asn = f"AS{a['asn']}" if a.get("asn") else ""
-    L.append(f"运营商  {' '.join(x for x in [asn, a.get('isp') or '', ('/ ' + a['org']) if a.get('org') and a.get('org') != a.get('isp') else ''] if x) or '未知'}")
-    tv = "、".join(f"{TYPE_CN.get(k, k)}{v:g}" for k, v in sorted(a["type_votes"].items(), key=lambda x: -x[1]))
-    tcol = {"residential": "32", "mobile": "32", "datacenter": "31"}.get(a["type"], "33")
-    L.append(f"类型    {C.w(tcol, a['type_cn'])}" + (C.w("2", f"  （投票：{tv}）") if tv else ""))
+
+    ok = [r for r in a["sources"] if r["ok"]]
+    kv = lambda k, v: L.append("  " + pad(C.w("36", k), 12) + str(v))
+
+    # 一、基础信息
+    L.append(C.w("1", "一、基础信息"))
+    kv("自治系统号", C.w("32", f"AS{a['asn']}") if a.get("asn") else "未知")
+    kv("组织", C.w("32", a.get("org") or a.get("isp") or "未知"))
+    if a.get("isp") and a.get("org") and a["isp"] != a["org"]:
+        kv("运营商", C.w("32", a["isp"]))
+    kv("位置", C.w("32", " ".join(x for x in [a.get("country") or a.get("country_code"), a.get("city")] if x) or "未知"))
     if a["native"] is not None:
-        L.append(f"原生    {C.w('32', '原生 IP') if a['native'] else C.w('33', '广播 IP')}" + C.w("2", f"  {a['native_note']}"))
-    L.append(f"代理    {flag_str(a['proxy'], '被标记为代理', a['hit_by']['proxy'])}")
-    L.append(f"VPN     {flag_str(a['vpn'], '被标记为 VPN', a['hit_by']['vpn'])}")
-    L.append(f"Tor     {flag_str(a['tor'], 'Tor 出口', a['hit_by']['tor'])}")
-    L.append(f"滥用    {flag_str(a['abuse'], '有滥用记录', a['hit_by']['abuser'])}")
-    if a.get("human_pct") is not None:
-        hc = "32" if a["human_pct"] >= 60 else ("33" if a["human_pct"] >= 40 else "31")
-        human = "真人 {}%".format(a["human_pct"])
-        L.append(f"人机    {C.w(hc, human)} / 机器 {a['bot_pct']}%" + C.w("2", "  （该 ASN 近 7 天，Cloudflare Radar）"))
-    elif not cf_token():
-        L.append(C.w("2", "人机    未启用（设置 CF_API_TOKEN 后显示 ASN 人机流量比）"))
+        tag = C.w("1;30;42", " 原生 IP ") if C.on and a["native"] else (C.w("1;30;43", " 广播 IP ") if C.on else ("原生 IP" if a["native"] else "广播 IP"))
+        kv("IP 类型", tag + C.w("2", f"  {a['native_note']}"))
+
+    # 二、IP 类型属性
+    L.append(C.w("1", "二、IP 类型属性"))
+    # 人机流量比在"三、风险评分"里单独显示，这里不重复占一列（票仍然计入）
+    tcols = [(SHORT.get(r["source"], r["source"]), r) for r in ok if r.get("type") and r["source"] != "Cloudflare Radar"]
+    tcolor = {"residential": "32", "mobile": "32", "datacenter": "31"}
+
+    def tcell(r):
+        return TYPE_CN.get(r["type"], r["type"]) + ("*" if r.get("w", 1) < 1 else ""), tcolor.get(r["type"], "33")
+
+    if tcols:
+        _matrix(L, tcols, [("使用类型", tcell)], col_w=9, per_block=8)
+        tv = "、".join(f"{TYPE_CN.get(k, k)} {v:g}" for k, v in sorted(a["type_votes"].items(), key=lambda x: -x[1]))
+        L.append("  " + pad(C.w("36", "综合判断"), 10) + C.w("1;" + tcolor.get(a["type"], "33"), a["type_cn"])
+                 + C.w("2", f"  （加权票：{tv}；* 为推测，算半票" + ("；含人机流量比" if a.get("human_pct") is not None else "") + "）"))
+    else:
+        L.append(C.w("2", "  无数据"))
+
+    # 三、风险评分
+    L.append(C.w("1", "三、风险评分"))
     if a["risk_scores"]:
-        rs = "  ".join(f"{k} {v}" for k, v in a["risk_scores"].items())
-        L.append(f"风险分  {rs}" + C.w("2", "  （0-100，越低越好）"))
-    if a.get("dnsbl"):
-        L.append(f"黑名单  DNSBL {a['dnsbl']}")
-    L.append(C.w("2", "─" * 52))
-    L.append(f"综合评分  {C.w('1;' + color, str(a['score']) + '/100')}  {a['emoji']} {C.w('1;' + color, a['level'])}")
+        L.append("  " + pad(C.w("36", "风险等级"), 14) + C.w("32", "极低  低") + "  " + C.w("33", "中等") + "  " + C.w("31", "高  极高"))
+        for k, v in a["risk_scores"].items():
+            lv, col = risk_level(v)
+            L.append("  " + pad(C.w("36", SHORT.get(k, k)), 14) + f"{v:>3} {bar(v)} {C.w(col, lv)}")
+    else:
+        L.append(C.w("2", "  无风险分数据"))
+    if a.get("human_pct") is not None:
+        hp = a["human_pct"]
+        hc = "32" if hp >= 60 else ("33" if hp >= 40 else "31")
+        n = round(hp / 5)
+        L.append("  " + pad(C.w("36", "人机流量比"), 14) + C.w(hc, "█" * n) + C.w("2", "░" * (20 - n))
+                 + f" 真人 {C.w(hc, str(hp) + '%')} / 机器 {a['bot_pct']}%" + C.w("2", "（该 ASN 近 7 天，Cloudflare Radar）"))
+    elif not cf_token():
+        L.append(C.w("2", "  人机流量比：未启用（设置 CF_API_TOKEN 后显示）"))
+
+    # 四、风险因子
+    L.append(C.w("1", "四、风险因子"))
+    keys = [("代理", "proxy"), ("VPN", "vpn"), ("Tor", "tor"), ("服务器", "hosting"), ("滥用", "abuser")]
+    fcols = [(SHORT.get(r["source"], r["source"]), r) for r in ok
+             if r["source"] != "DNSBL" and any(r.get(k) is not None for _, k in keys)]
+
+    def fcell(key):
+        def f(r):
+            v = r.get(key)
+            if v is None:
+                return "无", "2"
+            return ("是", "1;31") if v else ("否", "32")
+        return f
+
+    if fcols:
+        _matrix(L, fcols, [(n, fcell(k)) for n, k in keys])
+    else:
+        L.append(C.w("2", "  无数据"))
+
+    # 五、黑名单
+    dn = next((r for r in ok if r["source"] == "DNSBL"), None)
+    L.append(C.w("1", "五、黑名单"))
+    if dn:
+        hits = dn.get("dnsbl_hits") or []
+        chk = dn.get("dnsbl_checked") or 0
+        L.append("  " + pad(C.w("36", "邮件黑名单"), 12) + f"有效 {C.w('36', chk)}  正常 {C.w('32', chk - len(hits))}  "
+                 f"黑名单 {C.w('31' if hits else '32', len(hits))}" + (C.w("2", f"  （{', '.join(hits)}）") if hits else ""))
+    else:
+        L.append(C.w("2", "  DNSBL 查询失败"))
+    ab = a["hit_by"]["abuser"]
+    L.append("  " + pad(C.w("36", "滥用记录"), 12) + (C.w("31", "、".join(SHORT.get(x, x) for x in ab)) if ab else C.w("32", "无")))
+
+    # 六、综合结论
+    L.append(C.w("1", "六、综合结论"))
+    L.append("  " + pad(C.w("36", "综合评分"), 12) + C.w("1;" + color, f"{a['score']}/100") + f"  {a['emoji']} " + C.w("1;" + color, a["level"]))
     if a["reasons"]:
-        L.append(C.w("2", "扣分项    " + "；".join(a["reasons"])))
+        L.append("  " + pad(C.w("36", "扣分项"), 12) + C.w("2", "；".join(a["reasons"])))
     for x in a["advice"]:
-        L.append(f"建议      {x}")
+        L.append("  " + pad(C.w("36", "建议"), 12) + x)
+    bad = [SHORT.get(r["source"], r["source"]) for r in a["sources"] if not r["ok"]]
+    L.append(C.w("2", line))
+    L.append(C.w("2", f"  {a['sources_ok']}/{a['sources_total']} 个来源成功" + (f"；失败：{'、'.join(bad)}" if bad else "")
+                 + "。加 -v 看每个来源的原始判断。"))
     return "\n".join(L)
 
 
@@ -1381,8 +1505,6 @@ def main(argv=None):
         if a.get("sources"):
             if args.verbose:
                 print(render_sources(a))
-            else:
-                print(C.w("2", f"（{a['sources_ok']}/{a['sources_total']} 个来源成功，加 -v 看明细）"))
         return 0
 
     print(render_table(items))
