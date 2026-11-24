@@ -1,7 +1,7 @@
 {
   "name": "ip-purity",
-  "version": "1.1.0",
-  "description": "一键 IP 纯净度检测：多源免费 IP 库汇总，判断住宅/机房、代理/VPN、风险分、黑名单、原生/广播，给出评分与使用建议。含 skill 和 MCP。",
+  "version": "1.2.0",
+  "description": "一键 IP 纯净度检测：多源免费 IP 库汇总，判断住宅/机房、代理/VPN（命中进负面清单直接 0 分）、风险分、人机流量比、黑名单、原生/广播；支持批量。含 skill 和 MCP。",
   "author": {
     "name": "cc6pzupa"
   },
@@ -45,7 +45,9 @@
       "check.torproject.org",
       "api.greynoise.io",
       "api.stopforumspam.org",
-      "internetdb.shodan.io"
+      "internetdb.shodan.io",
+      "my.ippure.com",
+      "api.cloudflare.com"
     ]
   }
 }
